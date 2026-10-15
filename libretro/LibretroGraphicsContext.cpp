@@ -20,7 +20,12 @@ extern "C" {
 
 void retro_set_video_refresh(retro_video_refresh_t cb) { LibretroGraphicsContext::video_cb = cb; }
 static void context_reset() { ((LibretroHWRenderContext *)Libretro::ctx)->ContextReset(); }
-static void context_destroy() { ((LibretroHWRenderContext *)Libretro::ctx)->ContextDestroy(); }
+// A frontend may report the context gone after retro_unload_game, which has already shut the
+// context down and deleted it.
+static void context_destroy() {
+	if (Libretro::ctx)
+		((LibretroHWRenderContext *)Libretro::ctx)->ContextDestroy();
+}
 
 bool LibretroHWRenderContext::Init(bool cache_context) {
 	hw_render_.cache_context = cache_context;

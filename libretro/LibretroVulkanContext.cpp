@@ -131,6 +131,21 @@ void LibretroVulkanContext::ContextDestroy() {
    }
 }
 
+void LibretroVulkanContext::ResizeBackbuffer() {
+   if (!vk || !draw_)
+      return;
+   INFO_LOG(Log::G3D, "LibretroVulkanContext::ResizeBackbuffer (from %dx%d)", vk->GetBackbufferWidth(), vk->GetBackbufferHeight());
+   draw_->HandleEvent(Draw::Event::LOST_BACKBUFFER, vk->GetBackbufferWidth(), vk->GetBackbufferHeight());
+   vk->WaitUntilQueueIdle();
+   vk->DestroySwapchain();
+   // The swapchain's size is the internal resolution's (vkGetPhysicalDeviceSurfaceCapabilitiesKHR_libretro).
+   if (!vk->InitSwapchain(VK_PRESENT_MODE_FIFO_KHR)) {
+      ERROR_LOG(Log::G3D, "LibretroVulkanContext::ResizeBackbuffer: no swapchain");
+      return;
+   }
+   draw_->HandleEvent(Draw::Event::GOT_BACKBUFFER, vk->GetBackbufferWidth(), vk->GetBackbufferHeight());
+}
+
 void LibretroVulkanContext::CreateDrawContext() {
    vk->ReinitSurface();
 

@@ -150,12 +150,49 @@ static VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice_libretro(VkPhysicalDevice p
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL vkCreateLibretroSurfaceKHR(VkInstance instance, const void *pCreateInfo, const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface) {
-	*pSurface = vk_init_info.surface;
+	// Headless (no surface from the frontend): a stand-in handle, never given to the driver; the
+	// swapchain is the frontend's images and the surface's questions have answers of our own.
+	*pSurface = vk_init_info.surface != VK_NULL_HANDLE ? vk_init_info.surface : (VkSurfaceKHR)(uintptr_t)1;
+	return VK_SUCCESS;
+}
+
+// A frontend without a window (headless) gives no surface, and its instance has no surface
+// functions: the questions about the surface get these answers instead (the swapchain is the
+// frontend's images either way, see vkCreateSwapchainKHR_libretro).
+static VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceSupportKHR_headless(VkPhysicalDevice, uint32_t, VkSurfaceKHR, VkBool32 *pSupported) {
+	*pSupported = VK_TRUE;
+	return VK_SUCCESS;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceFormatsKHR_headless(VkPhysicalDevice, VkSurfaceKHR, uint32_t *pCount, VkSurfaceFormatKHR *pFormats) {
+	if (pFormats && *pCount >= 1)
+		pFormats[0] = {VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+	*pCount = 1;
+	return VK_SUCCESS;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfacePresentModesKHR_headless(VkPhysicalDevice, VkSurfaceKHR, uint32_t *pCount, VkPresentModeKHR *pModes) {
+	if (pModes && *pCount >= 1)
+		pModes[0] = VK_PRESENT_MODE_FIFO_KHR;
+	*pCount = 1;
+	return VK_SUCCESS;
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilitiesKHR_headless(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilitiesKHR *pCaps) {
+	*pCaps = {};
+	pCaps->minImageCount = 2;
+	pCaps->maxImageCount = 3;
+	pCaps->maxImageArrayLayers = 1;
+	pCaps->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+	pCaps->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+	pCaps->supportedCompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+	pCaps->supportedUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilitiesKHR_libretro(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR *pSurfaceCapabilities) {
-	VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR_org(physicalDevice, surface, pSurfaceCapabilities);
+	VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR_org ? vkGetPhysicalDeviceSurfaceCapabilitiesKHR_org(physicalDevice, surface, pSurfaceCapabilities)
+	                                                              : vkGetPhysicalDeviceSurfaceCapabilitiesKHR_headless(physicalDevice, surface, pSurfaceCapabilities);
 	if (res == VK_SUCCESS) {
 		int w = g_Config.iInternalResolution * NATIVEWIDTH;
 		int h = g_Config.iInternalResolution * NATIVEHEIGHT;
@@ -411,29 +448,35 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr_libretro(VkInstan
 		return (PFN_vkVoidFunction)vkCreateLibretroSurfaceKHR;
 	}
 
-	PFN_vkVoidFunction fptr = vk_init_info.get_instance_proc_addr(instance, pName);
-   if (!fptr) {
-      ERROR_LOG(Log::G3D, "Failed to load VK instance function: %s", pName);
-      return fptr;
-   }
+	if (vk_init_info.surface == VK_NULL_HANDLE) {
+		if (!strcmp(pName, "vkGetPhysicalDeviceSurfaceSupportKHR"))
+			return (PFN_vkVoidFunction)vkGetPhysicalDeviceSurfaceSupportKHR_headless;
+		if (!strcmp(pName, "vkGetPhysicalDeviceSurfaceFormatsKHR"))
+			return (PFN_vkVoidFunction)vkGetPhysicalDeviceSurfaceFormatsKHR_headless;
+		if (!strcmp(pName, "vkGetPhysicalDeviceSurfacePresentModesKHR"))
+			return (PFN_vkVoidFunction)vkGetPhysicalDeviceSurfacePresentModesKHR_headless;
+	}
 
+	PFN_vkVoidFunction fptr = vk_init_info.get_instance_proc_addr(instance, pName);
+	// Our replacements stand in even where the driver has no such function (headless: no surface
+	// functions); those that call the original check it first.
 	LIBRETRO_VK_WARP_LIST();
+	if (!fptr)
+		ERROR_LOG(Log::G3D, "Failed to load VK instance function: %s", pName);
 
 	return fptr;
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr_libretro(VkDevice device, const char *pName) {
 	PFN_vkVoidFunction fptr = vkGetDeviceProcAddr_org(device, pName);
-	if (!fptr)
-		return fptr;
-
+	// As above: the swapchain's functions are ours, also on a device without the swapchain extension.
 	LIBRETRO_VK_WARP_LIST();
 
 	return fptr;
 }
 
 void vk_libretro_init(VkInstance instance, VkPhysicalDevice gpu, VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr, const char **required_device_extensions, unsigned num_required_device_extensions, const char **required_device_layers, unsigned num_required_device_layers, const VkPhysicalDeviceFeatures *required_features) {
-	assert(surface);
+	// A null surface is a frontend without a window (headless): see vkCreateLibretroSurfaceKHR.
 
 	vk_init_info.instance = instance;
 	vk_init_info.gpu = gpu;

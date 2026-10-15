@@ -48,6 +48,7 @@
 
 #include <libretro.h>
 #include "libretro/LibretroGraphicsContext.h"
+#include "libretro/LibretroVulkanContext.h"
 #include "libretro/libretro_core_options.h"
 
 #if PPSSPP_PLATFORM(ANDROID)
@@ -1128,6 +1129,15 @@ static void check_variables(CoreParameter &coreParam)
          gpu->NotifyDisplayResized();
          if (ctx && ctx->GetGPUCore() != GPUCORE_VULKAN)
             resetHWContext = true;
+#ifndef HAVE_LIBNX
+         else if (ctx)
+         {
+            // Vulkan: new swapchain images of the new size, and the game's render targets
+            // recomputed for the new scale (NotifyDisplayResized only moves the output).
+            ((LibretroVulkanContext *)ctx)->ResizeBackbuffer();
+            gpu->NotifyRenderResized(g_Config.GetDisplayLayoutConfig(g_display.GetDeviceOrientation()));
+         }
+#endif
       }
    }
 
@@ -1290,6 +1300,9 @@ void retro_init(void)
    g_Config.memStickDirectory = retro_save_dir;
    g_Config.flash0Directory = retro_base_dir / "flash0";
    g_Config.internalDataDirectory = retro_base_dir;
+   // The full app makes the memory stick's folders (PSP/SAVEDATA and the rest) at start-up; the
+   // libretro core never did, so a game's first save failed: its save folder's parent was missing.
+   CreateSysDirectories();
    g_Config.bEnableNetworkChat = false;
    g_Config.bDiscordRichPresence = false;
 
